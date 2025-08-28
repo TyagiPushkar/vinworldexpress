@@ -20,7 +20,8 @@
             display: flex;
             justify-content: center;
             align-items: center;
-            height: 100vh;
+            min-height: 100vh;
+            padding: 20px;
         }
 
         .calculator {
@@ -118,6 +119,78 @@
             font-weight: bold;
             color: #002d62;
         }
+
+        .price-details {
+            margin-top: 20px;
+            display: none;
+            background: #f9f9f9;
+            border-radius: 10px;
+            padding: 20px;
+            border: 1px solid #ddd;
+        }
+
+        .price-details h3 {
+            color: #002d62;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+
+        .price-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+
+        .price-table th,
+        .price-table td {
+            padding: 10px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+
+        .price-table th {
+            background-color: #eaf3ff;
+        }
+
+        .price-table tr:last-child td {
+            border-bottom: none;
+            font-weight: bold;
+            color: #f7931d;
+        }
+
+        .loader {
+            display: none;
+            text-align: center;
+            margin: 10px 0;
+        }
+
+        .loader:after {
+            content: " ";
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            border: 3px solid #ccc;
+            border-color: #ccc transparent #ccc transparent;
+            animation: loader 1.2s linear infinite;
+        }
+
+        @keyframes loader {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        .error {
+            color: red;
+            margin-top: 10px;
+            text-align: center;
+            display: none;
+        }
     </style>
 </head>
 
@@ -160,35 +233,215 @@
             </div>
         </div>
 
+        <div class="form-row" id="pincode-row" style="display: none;">
+            <div class="form-group">
+                <label for="pincode">Destination Pincode (Surface only)</label>
+                <input type="text" id="pincode" placeholder="Enter Pincode" maxlength="6">
+            </div>
+        </div>
+
         <button onclick="calculateWeight()">Calculate</button>
+        <div class="loader" id="loader"></div>
+        <div class="error" id="error"></div>
         <div id="result" class="result" style="display: none;"></div>
+        <div id="price-details" class="price-details"></div>
     </div>
 
     <script>
-        function calculateWeight() {
+        // Show/hide pincode field based on mode selection
+        document.getElementById('mode').addEventListener('change', function () {
+            const pincodeRow = document.getElementById('pincode-row');
+            pincodeRow.style.display = this.value === 'surface' ? 'flex' : 'none';
+        });
+
+        async function calculateWeight() {
             const mode = document.getElementById("mode").value;
             const length = parseFloat(document.getElementById("length").value);
             const breadth = parseFloat(document.getElementById("breadth").value);
             const height = parseFloat(document.getElementById("height").value);
             const gross = parseFloat(document.getElementById("gross").value);
+            const pincode = document.getElementById("pincode").value;
 
+            // Reset previous results
+            document.getElementById("result").style.display = "none";
+            document.getElementById("price-details").style.display = "none";
+            document.getElementById("error").style.display = "none";
+
+            // Validation
             if (isNaN(length) || isNaN(breadth) || isNaN(height) || isNaN(gross)) {
-                alert("⚠️ Please fill all fields correctly.");
+                showError("⚠️ Please fill all fields correctly.");
+                return;
+            }
+
+            if (mode === "surface" && (!pincode || pincode.length !== 6)) {
+                showError("⚠️ Please enter a valid 6-digit pincode for surface calculation.");
                 return;
             }
 
             let divisor = (mode === "air") ? 5000 : 4000;
             let volumetric = (length * breadth * height) / divisor;
-            volumetric = volumetric.toFixed(2);
+            volumetric = parseFloat(volumetric.toFixed(2));
 
-            let chargeable = Math.max(volumetric, gross).toFixed(2);
+            let chargeable = Math.max(volumetric, gross);
+            chargeable = Math.ceil(chargeable); // Round up to next whole number
 
+            // Display weight result
             document.getElementById("result").style.display = "block";
             document.getElementById("result").innerHTML = `
-        📦 Volumetric Weight: <b>${volumetric} Kg</b><br>
-        ⚖️ Gross Weight: <b>${gross.toFixed(2)} Kg</b><br><hr>
-        ✅ Chargeable Weight: <b style="color:#f7931d">${chargeable} Kg</b>
-      `;
+                📦 Volumetric Weight: <b>${volumetric.toFixed(2)} Kg</b><br>
+                ⚖️ Gross Weight: <b>${gross.toFixed(2)} Kg</b><br><hr>
+                ✅ Chargeable Weight: <b style="color:#f7931d">${chargeable} Kg</b>
+            `;
+
+            // Calculate price for surface mode
+            if (mode === "surface") {
+                document.getElementById("loader").style.display = "block";
+                try {
+                    await calculatePrice(pincode, chargeable);
+                } catch (error) {
+                    showError("Error calculating price: " + error.message);
+                } finally {
+                    document.getElementById("loader").style.display = "none";
+                }
+            }
+        }
+
+        async function calculatePrice(pincode, chargeableWeight) {
+            try {
+                // Step 1: Get state info from pincode
+                const pincodeResponse = await fetch(`https://namami-infotech.com/vinworld/src/pincode/get_pincode.php?pincode=${pincode}`);
+                const pincodeData = await pincodeResponse.json();
+
+                if (!pincodeData.success) {
+                    throw new Error("Pincode not found");
+                }
+
+                const stateName = pincodeData.data[0].State_Name;
+                const isODA = parseInt(pincodeData.data[0].ODA) === 1;
+
+                // Step 2: Get zone from state
+                const zoneResponse = await fetch(`https://namami-infotech.com/vinworld/src/pincode/get_zone.php?StateName=${encodeURIComponent(stateName)}`);
+                const zoneData = await zoneResponse.json();
+
+                if (!zoneData.success) {
+                    throw new Error("Zone not found for this state");
+                }
+
+                const zone = zoneData.data[0].Zone;
+
+                // Step 3: Get price from zone
+                const priceResponse = await fetch(`https://namami-infotech.com/vinworld/src/pincode/get_price.php?Zone=${zone}`);
+                const priceData = await priceResponse.json();
+
+                if (!priceData.success) {
+                    throw new Error("Price not found for this zone");
+                }
+
+                const priceInfo = priceData.data[0];
+                let freight;
+
+                if (isODA) {
+                    // ODA pricing based on weight slabs
+                    if (chargeableWeight <= 10) {
+                        freight = parseFloat(priceInfo.ODA0_10);
+                    } else if (chargeableWeight <= 50) {
+                        freight = parseFloat(priceInfo.ODA11_50);
+                    } else if (chargeableWeight <= 200) {
+                        freight = parseFloat(priceInfo.ODA51_200);
+                    } else if (chargeableWeight <= 1000) {
+                        freight = parseFloat(priceInfo.ODA201_1000);
+                    } else {
+                        freight = parseFloat(priceInfo.ODA1001_5000);
+                    }
+                } else {
+                    // Regular pricing
+                    const pricePerKg = parseFloat(priceInfo.Price);
+                    freight = chargeableWeight * pricePerKg;
+                }
+
+                // Calculate additional charges
+                const fuelSurcharge = freight * 0.15; // 15% of freight
+                const docketCharge = 100;
+
+                // FOV charge (if freight < 50000 then 100, else 0.2% of freight)
+                const fovCharge = freight < 50000 ? 100 : freight * 0.002;
+
+                // Subtotal
+                const subtotal = freight + fuelSurcharge + docketCharge + fovCharge;
+
+                // GST (18% of subtotal)
+                const gst = subtotal * 0.18;
+
+                // Total
+                const total = subtotal + gst;
+
+                // Display price details
+                displayPriceDetails({
+                    state: stateName,
+                    zone: zone,
+                    isODA: isODA,
+                    freight: freight.toFixed(2),
+                    fuelSurcharge: fuelSurcharge.toFixed(2),
+                    docketCharge: docketCharge.toFixed(2),
+                    fovCharge: fovCharge.toFixed(2),
+                    subtotal: subtotal.toFixed(2),
+                    gst: gst.toFixed(2),
+                    total: total.toFixed(2)
+                });
+
+            } catch (error) {
+                showError("Error calculating price: " + error.message);
+                throw error;
+            }
+        }
+
+        function displayPriceDetails(priceData) {
+            const priceDetails = document.getElementById("price-details");
+            priceDetails.innerHTML = `
+                <h3>Price Calculation Details</h3>
+                <p><strong>State:</strong> ${priceData.state} | <strong>Zone:</strong> ${priceData.zone} | <strong>ODA:</strong> ${priceData.isODA ? 'Yes' : 'No'}</p>
+                <table class="price-table">
+                    <tr>
+                        <th>Description</th>
+                        <th>Amount (₹)</th>
+                    </tr>
+                    <tr>
+                        <td>Freight Charges</td>
+                        <td>${priceData.freight}</td>
+                    </tr>
+                    <tr>
+                        <td>Fuel Surcharge (15%)</td>
+                        <td>${priceData.fuelSurcharge}</td>
+                    </tr>
+                    <tr>
+                        <td>Docket Charges</td>
+                        <td>${priceData.docketCharge}</td>
+                    </tr>
+                    <tr>
+                        <td>FOV Charges</td>
+                        <td>${priceData.fovCharge}</td>
+                    </tr>
+                    <tr>
+                        <td>Subtotal</td>
+                        <td>${priceData.subtotal}</td>
+                    </tr>
+                    <tr>
+                        <td>GST (18%)</td>
+                        <td>${priceData.gst}</td>
+                    </tr>
+                    <tr>
+                        <td>Total Amount</td>
+                        <td>${priceData.total}</td>
+                    </tr>
+                </table>
+            `;
+            priceDetails.style.display = "block";
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById("error");
+            errorDiv.textContent = message;
+            errorDiv.style.display = "block";
         }
     </script>
 </body>
