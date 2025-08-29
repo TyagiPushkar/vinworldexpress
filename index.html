@@ -191,6 +191,10 @@
             text-align: center;
             display: none;
         }
+
+        .invoice-input {
+            display: none;
+        }
     </style>
 </head>
 
@@ -199,7 +203,7 @@
         <!-- Logo Section -->
         <div class="logo">
             <img src="https://vinworldexpress.com/assets/img/resource/logo-4.png" alt="VIN WORLD Logo">
-            <h1>Volumetric Weight Calculator</h1>
+            <h1>Freight Calculator</h1>
         </div>
 
         <h2>Calculate Chargeable Weight</h2>
@@ -240,6 +244,13 @@
             </div>
         </div>
 
+        <div class="form-row invoice-input" id="invoice-row">
+            <div class="form-group">
+                <label for="invoice">Invoice Value (₹) - For FOV Calculation</label>
+                <input type="number" id="invoice" placeholder="Enter Invoice Value" value="0">
+            </div>
+        </div>
+
         <button onclick="calculateWeight()">Calculate</button>
         <div class="loader" id="loader"></div>
         <div class="error" id="error"></div>
@@ -251,7 +262,11 @@
         // Show/hide pincode field based on mode selection
         document.getElementById('mode').addEventListener('change', function () {
             const pincodeRow = document.getElementById('pincode-row');
-            pincodeRow.style.display = this.value === 'surface' ? 'flex' : 'none';
+            const invoiceRow = document.getElementById('invoice-row');
+            const isSurface = this.value === 'surface';
+
+            pincodeRow.style.display = isSurface ? 'flex' : 'none';
+            invoiceRow.style.display = isSurface ? 'flex' : 'none';
         });
 
         async function calculateWeight() {
@@ -261,6 +276,7 @@
             const height = parseFloat(document.getElementById("height").value);
             const gross = parseFloat(document.getElementById("gross").value);
             const pincode = document.getElementById("pincode").value;
+            const invoiceValue = parseFloat(document.getElementById("invoice").value) || 0;
 
             // Reset previous results
             document.getElementById("result").style.display = "none";
@@ -297,7 +313,7 @@
             if (mode === "surface") {
                 document.getElementById("loader").style.display = "block";
                 try {
-                    await calculatePrice(pincode, chargeable);
+                    await calculatePrice(pincode, chargeable, invoiceValue);
                 } catch (error) {
                     showError("Error calculating price: " + error.message);
                 } finally {
@@ -306,7 +322,7 @@
             }
         }
 
-        async function calculatePrice(pincode, chargeableWeight) {
+        async function calculatePrice(pincode, chargeableWeight, invoiceValue) {
             try {
                 // Step 1: Get state info from pincode
                 const pincodeResponse = await fetch(`https://namami-infotech.com/vinworld/src/pincode/get_pincode.php?pincode=${pincode}`);
@@ -338,36 +354,41 @@
                 }
 
                 const priceInfo = priceData.data[0];
-                let freight;
+                let freight, odaCharge = 0;
 
+                // Calculate base freight (same for both ODA and non-ODA)
+                const pricePerKg = parseFloat(priceInfo.Price);
+                freight = chargeableWeight * pricePerKg;
+
+                // For ODA areas, add ODA charge based on weight slabs
                 if (isODA) {
-                    // ODA pricing based on weight slabs
                     if (chargeableWeight <= 10) {
-                        freight = parseFloat(priceInfo.ODA0_10);
+                        odaCharge = parseFloat(priceInfo.ODA0_10);
                     } else if (chargeableWeight <= 50) {
-                        freight = parseFloat(priceInfo.ODA11_50);
+                        odaCharge = parseFloat(priceInfo.ODA11_50);
                     } else if (chargeableWeight <= 200) {
-                        freight = parseFloat(priceInfo.ODA51_200);
+                        odaCharge = parseFloat(priceInfo.ODA51_200);
                     } else if (chargeableWeight <= 1000) {
-                        freight = parseFloat(priceInfo.ODA201_1000);
+                        odaCharge = parseFloat(priceInfo.ODA201_1000);
                     } else {
-                        freight = parseFloat(priceInfo.ODA1001_5000);
+                        odaCharge = parseFloat(priceInfo.ODA1001_5000);
                     }
-                } else {
-                    // Regular pricing
-                    const pricePerKg = parseFloat(priceInfo.Price);
-                    freight = chargeableWeight * pricePerKg;
                 }
 
                 // Calculate additional charges
-                const fuelSurcharge = freight * 0.15; // 15% of freight
                 const docketCharge = 100;
 
-                // FOV charge (if freight < 50000 then 100, else 0.2% of freight)
-                const fovCharge = freight < 50000 ? 100 : freight * 0.002;
+                // FOV charge (if invoice value < 50000 then 100, else 0.2% of invoice value)
+                const fovCharge = invoiceValue < 50000 ? 100 : invoiceValue * 0.002;
 
-                // Subtotal
-                const subtotal = freight + fuelSurcharge + docketCharge + fovCharge;
+                // Calculate subtotal before fuel surcharge
+                const subtotalBeforeFSC = freight + odaCharge + docketCharge + fovCharge;
+
+                // Fuel surcharge (15% of subtotal before FSC)
+                const fuelSurcharge = subtotalBeforeFSC * 0.15;
+
+                // Subtotal after fuel surcharge
+                const subtotal = subtotalBeforeFSC + fuelSurcharge;
 
                 // GST (18% of subtotal)
                 const gst = subtotal * 0.18;
@@ -381,9 +402,10 @@
                     zone: zone,
                     isODA: isODA,
                     freight: freight.toFixed(2),
-                    fuelSurcharge: fuelSurcharge.toFixed(2),
+                    odaCharge: odaCharge.toFixed(2),
                     docketCharge: docketCharge.toFixed(2),
                     fovCharge: fovCharge.toFixed(2),
+                    fuelSurcharge: fuelSurcharge.toFixed(2),
                     subtotal: subtotal.toFixed(2),
                     gst: gst.toFixed(2),
                     total: total.toFixed(2)
@@ -397,6 +419,15 @@
 
         function displayPriceDetails(priceData) {
             const priceDetails = document.getElementById("price-details");
+
+            let odaRow = '';
+            if (priceData.isODA) {
+                odaRow = `<tr>
+                    <td>ODA Charges</td>
+                    <td>${priceData.odaCharge}</td>
+                </tr>`;
+            }
+
             priceDetails.innerHTML = `
                 <h3>Price Calculation Details</h3>
                 <p><strong>State:</strong> ${priceData.state} | <strong>Zone:</strong> ${priceData.zone} | <strong>ODA:</strong> ${priceData.isODA ? 'Yes' : 'No'}</p>
@@ -409,10 +440,7 @@
                         <td>Freight Charges</td>
                         <td>${priceData.freight}</td>
                     </tr>
-                    <tr>
-                        <td>Fuel Surcharge (15%)</td>
-                        <td>${priceData.fuelSurcharge}</td>
-                    </tr>
+                    ${odaRow}
                     <tr>
                         <td>Docket Charges</td>
                         <td>${priceData.docketCharge}</td>
@@ -422,7 +450,15 @@
                         <td>${priceData.fovCharge}</td>
                     </tr>
                     <tr>
-                        <td>Subtotal</td>
+                        <td>Subtotal before FSC</td>
+                        <td>${(parseFloat(priceData.freight) + parseFloat(priceData.odaCharge) + parseFloat(priceData.docketCharge) + parseFloat(priceData.fovCharge)).toFixed(2)}</td>
+                    </tr>
+                    <tr>
+                        <td>Fuel Surcharge (15%)</td>
+                        <td>${priceData.fuelSurcharge}</td>
+                    </tr>
+                    <tr>
+                        <td>Subtotal before GST</td>
                         <td>${priceData.subtotal}</td>
                     </tr>
                     <tr>
